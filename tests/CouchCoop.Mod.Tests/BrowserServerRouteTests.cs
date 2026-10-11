@@ -24,6 +24,13 @@ using Spirectl.Sts2.Core.Reference;
 using Spirectl.Sts2.Core.SceneInspection;
 using Spirectl.Sts2.Embedding;
 
+if (args is ["headless-loading", ..])
+{
+    await HeadlessAssetLoadingActivityTests.RunAsync();
+    Console.WriteLine("headless loading: ok");
+    return;
+}
+
 if (args is ["audio-tmpsfx", ..])
 {
     await AudioTmpSfxRouteTests.RunAsync();
@@ -608,6 +615,7 @@ if (args is ["beta-targets", ..])
     // lobby-screen mount points — in the same order the full sequence takes them.
     Leg(nameof(NetTransportPatchTargetsTests), NetTransportPatchTargetsTests.Run);
     Leg(nameof(HeadlessAudioMuteTargetsTests), HeadlessAudioMuteTargetsTests.Run);
+    Leg(nameof(HeadlessAssetLoadingActivityTests), HeadlessAssetLoadingActivityTests.TargetsResolve);
     Leg(nameof(HostMusicStateTests), HostMusicStateTests.TargetsResolve);
     Leg(nameof(SeatAudioFeedTests), SeatAudioFeedTests.TargetsResolve);
     // The seat's Steam-Cloud write paths. Same standing as the FMOD forwards above, and the same consequence if
@@ -754,6 +762,7 @@ HeadlessParticleFreezeExemptionTests.Run();
 // WS-3 idle wire: the spine freeze re-asserts on every scan — its dedup set is a reporting set, never the gate
 // (a node whose ProcessMode came back used to be skipped forever; see the file header).
 HeadlessSpineFreezeTests.Run();
+await HeadlessAssetLoadingActivityTests.RunAsync();
 // Geoclip round: all three freeze walks skip an OFF-SCREEN EXTRACTION subtree (they DFS from SceneTree.Root, so
 // they otherwise freeze the detached rig a bake is posing and it returns one pose repeated) — and skip nothing
 // else, so a non-marked SubViewport's spine children stay frozen.
