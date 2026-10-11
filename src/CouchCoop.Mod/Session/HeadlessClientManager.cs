@@ -450,11 +450,8 @@ public sealed partial class HeadlessClientManager : IDisposable
     // returned. (port − 13337) / 10 = slot; netId = 1000 + slot.
     public static ulong NetIdForPort(int port) => SlotToNetId((port - HostPort) / PortStep);
 
-    // The game's NullPlatformUtilStrategy reads "./mp_names.json" (netId→display name) ONCE at construction and
-    // otherwise renders a remote player's nameplate as its raw netId ("1002"). We write the active co-op roster to
-    // this file before spawning each headless so the freshly-launched instance (and thus its browser mirror) shows
-    // every player's chosen name. Read relative to the process working directory, which the spawned headless
-    // inherits from the host. See memory: headless naming via mp_names.json.
+    // The durable roster lives in the host's user://couch-coop directory. Its absolute path is passed to each
+    // isolated seat; direct launches use that containing directory for native startup name compatibility too.
     //
     // DURABLE BY DESIGN — do NOT "clean up" / blank this file at startup. It is the ONLY persistent netId→name
     // store: the game's save carries a run's NetIds but no player names at all, so labelling the seats of a
@@ -465,7 +462,7 @@ public sealed partial class HeadlessClientManager : IDisposable
     // override exists — exactly the saved-seat case we want it for. WriteMultiplayerNamesFileLocked keeps it
     // accurate by republishing the roster before every spawn.
     // Internal so the seat-side HeadlessClientNameSync can stat the same path it reads.
-    internal const string MultiplayerNamesFile = "mp_names.json";
+    internal const string MultiplayerNamesFile = MultiplayerNameStore.FileName;
 
     // Internal so the test project (which references this assembly) can inject a fake launcher + probe.
     internal HeadlessClientManager(
@@ -1449,7 +1446,7 @@ public sealed partial class HeadlessClientManager : IDisposable
     }
 
     /// <summary>
-    /// Write the active co-op name roster to <see cref="MultiplayerNamesFile"/> in the working directory, in the
+    /// Write the active co-op name roster to <see cref="MultiplayerNamesFile"/> in the host's user directory, in the
     /// game's <c>mp_names.json</c> format (<c>[{"net_id":1002,"name":"tess"}]</c>). Real-launcher only (skipped
     /// under the test launcher, which leaves <c>_gameExe</c> null, so unit tests never touch the filesystem;
     /// <see cref="BuildMultiplayerNameEntries"/> is where the content itself is tested). Caller holds
@@ -1470,9 +1467,10 @@ public sealed partial class HeadlessClientManager : IDisposable
             return;
         }
 
-        var path = Path.Combine(Directory.GetCurrentDirectory(), MultiplayerNamesFile);
         try
         {
+            var path = MultiplayerNameStore.ResolveWritePath();
+            if (path is null) return;
             var entries = BuildMultiplayerNameEntries(
                 joiningNetId: newSlot >= MinSlot ? SlotToNetId(newSlot) : null,
                 joiningName: newName,
@@ -1480,17 +1478,11 @@ public sealed partial class HeadlessClientManager : IDisposable
                 publishedNames: _publishedNames,
                 existingEntries: ReadMultiplayerNames());
 
-            // Write + RENAME rather than writing in place: every live seat reads this file (the game once at
-            // startup, our name sync on every change), and a truncate-then-write is observable half-done. A seat
-            // whose ONE startup read lands mid-write would show raw netIds for its whole life. Rename is atomic on
-            // the same filesystem, so a reader sees either the old file or the new one.
-            var temp = path + ".tmp";
-            File.WriteAllText(temp, JsonSerializer.Serialize(entries));
-            File.Move(temp, path, overwrite: true);
+            MultiplayerNameStore.Write(path, entries);
         }
         catch (Exception ex)
         {
-            CouchCoopLog.Stderr($"failed writing {MultiplayerNamesFile}: {ex.GetType().Name}: {ex.Message}");
+            CouchCoopLog.Warn($"failed writing {MultiplayerNamesFile}: {ex.GetType().Name}: {ex.Message}");
         }
     }
 
@@ -1560,48 +1552,15 @@ public sealed partial class HeadlessClientManager : IDisposable
         [JsonPropertyName("name")] public string name { get; set; } = "";
     }
 
-    private static readonly IReadOnlyDictionary<ulong, string> EmptyNames = new Dictionary<ulong, string>();
-
     /// <summary>
     /// Read the shared <c>mp_names.json</c> roster (host-written before spawning each headless) into a
-    /// netId→display-name map. Empty on a missing/unreadable/malformed file. Static + side-effect-free: a running
+    /// netId→display-name map. Empty on a missing/unreadable/malformed file. Existing legacy files migrate to
+    /// the host's user directory only when its canonical map is absent. A running
     /// headless instance (which has no <see cref="HeadlessClientManager"/> of its own) calls this to re-apply a
     /// LATER joiner's name as a local <c>SetClientName</c> override — the game itself only reads the file once at
     /// startup, so an already-running headless would otherwise render a newcomer as their raw netId.
     /// </summary>
-    public static IReadOnlyDictionary<ulong, string> ReadMultiplayerNames()
-    {
-        try
-        {
-            var path = Path.Combine(Directory.GetCurrentDirectory(), MultiplayerNamesFile);
-            if (!File.Exists(path))
-            {
-                return EmptyNames;
-            }
-
-            var entries = JsonSerializer.Deserialize<List<MultiplayerNameEntry>>(File.ReadAllText(path));
-            if (entries is null || entries.Count == 0)
-            {
-                return EmptyNames;
-            }
-
-            var map = new Dictionary<ulong, string>();
-            foreach (var entry in entries)
-            {
-                var name = entry.name?.Trim();
-                if (!string.IsNullOrEmpty(name))
-                {
-                    map[entry.net_id] = name;
-                }
-            }
-
-            return map;
-        }
-        catch (Exception ex) when (ex is IOException or JsonException or UnauthorizedAccessException)
-        {
-            return EmptyNames;
-        }
-    }
+    public static IReadOnlyDictionary<ulong, string> ReadMultiplayerNames() => MultiplayerNameStore.Read();
 
     /// <summary>
     /// The display name currently CLAIMING <paramref name="slot"/>, or null when it is unclaimed. Caller
@@ -2129,6 +2088,7 @@ public sealed partial class HeadlessClientManager : IDisposable
         // Prevent the headless child from inheriting the host's port so if it tried to spawn
         // sub-headless instances (it won't, but defensive) they'd start at the right base.
         psi.EnvironmentVariables.Remove("COUCHCOOP_HEADLESS_WRAPPER");
+        MultiplayerNameStore.ConfigureSeatLaunch(psi, hasWrapper: _headlessWrapper is not null);
 
         try
         {

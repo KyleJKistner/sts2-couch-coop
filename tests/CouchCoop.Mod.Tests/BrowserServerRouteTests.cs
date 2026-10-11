@@ -24,6 +24,21 @@ using Spirectl.Sts2.Core.Reference;
 using Spirectl.Sts2.Core.SceneInspection;
 using Spirectl.Sts2.Embedding;
 
+if (args is [MultiplayerNameStoreTests.ReadChildVerb, ..])
+{
+    MultiplayerNameStoreTests.RunReadChild();
+    return;
+}
+
+if (args is ["player-names", ..])
+{
+    MultiplayerNameStoreTests.Run();
+    MirrorSeatRosterTests.Run();
+    PlayerNameRosterTests.Run();
+    Console.WriteLine("player names: ok");
+    return;
+}
+
 if (args is ["headless-loading", ..])
 {
     await HeadlessAssetLoadingActivityTests.RunAsync();
@@ -864,6 +879,7 @@ MirrorSeatRosterTests.Run();
 // Player names on a seat: what the host publishes (itself + remote Steam players, which a seat cannot resolve),
 // how that merges into the durable mp_names.json roster, and how a running seat picks up later joiners.
 PlayerNameRosterTests.Run();
+MultiplayerNameStoreTests.Run();
 // WS-F: advertised LAN IPv4 ranking (tunnel/docker/APIPA demotion) + the COUCHCOOP_ADVERTISED_HOST override.
 LanAddressRankingTests.Run();
 // WS-2 QR dialog: the option list the dialog offers (adapter x method cross product, tier-first grouping,
