@@ -25,8 +25,8 @@ internal static class RunPresenceTests
         UnavailableReadsAsNoRunForTheDisconnectAndLaunchCallers();
         HostingTrackerSkipsAnEvaluationItCannotRead();
         await DisconnectInARunKeepsTheSeatDetached();
-        await DisconnectInTheLobbyReleasesTheSeatAndEvictsItsPeer();
-        await DisconnectWhenTheReadIsUnavailableReleasesTheSeat();
+        await DisconnectInTheLobbyReleasesTheSeatAndEvictsItsPeerAfterGrace();
+        await DisconnectWhenTheReadIsUnavailableReleasesTheSeatAfterGrace();
         await DisconnectWithoutASeatEvictsNothing();
         await LaunchIsRefusedInARunAndAllowedOtherwise();
         await ALaunchAfterAnUnreadableAnswerIsNotRefused();
@@ -138,6 +138,7 @@ internal static class RunPresenceTests
         public readonly List<ulong> NamesCleared = [];
         public readonly CouchCoopGameFactsTests.FakeFacts Facts = new() { RunRead = () => false };
         public readonly BrowserServerRouteTests.RecordingSpirectlRuntime Runtime = new();
+        public readonly HeadlessClientManagerTests.ReconnectClock ReconnectTime = new();
         public readonly CouchCoopRuntimeHost Host;
         public readonly HeadlessClientManager Manager;
 
@@ -154,7 +155,8 @@ internal static class RunPresenceTests
                 },
                 readinessProbe: (_, _) => Task.FromResult(true),
                 maxSeatsProbe: () => 3,
-                runInProgressProbe: Lobby.IsRunInProgress);
+                runInProgressProbe: Lobby.IsRunInProgress,
+                browserReconnectTime: ReconnectTime);
         }
 
         public CouchCoopLobbyParticipation Lobby => new(Host);
@@ -222,7 +224,7 @@ internal static class RunPresenceTests
         });
     }
 
-    private static async Task DisconnectInTheLobbyReleasesTheSeatAndEvictsItsPeer()
+    private static async Task DisconnectInTheLobbyReleasesTheSeatAndEvictsItsPeerAfterGrace()
     {
         using var rig = new Rig();
         var manager = rig.Manager;
@@ -234,7 +236,10 @@ internal static class RunPresenceTests
 
             rig.Disconnect(session);
 
-            Expect(process.HardKilled, "a disconnect in the lobby kills the seat process");
+            Expect(!process.Exited && rig.Evicted.Count == 0, "the lobby seat remains live during reconnect grace");
+            rig.ReconnectTime.Advance(HeadlessClientManager.BrowserReconnectGrace);
+
+            Expect(process.HardKilled, "a disconnect in the lobby kills the absent seat after reconnect grace");
             Expect(rig.Evicted.SequenceEqual([HeadlessClientManager.SlotToNetId(2)]),
                 "and evicts its peer so a same-name rejoin is not refused as a duplicate netId");
             Expect(rig.NamesCleared.Count == 0,
@@ -243,7 +248,7 @@ internal static class RunPresenceTests
         });
     }
 
-    private static async Task DisconnectWhenTheReadIsUnavailableReleasesTheSeat()
+    private static async Task DisconnectWhenTheReadIsUnavailableReleasesTheSeatAfterGrace()
     {
         using var rig = new Rig();
         var manager = rig.Manager;
@@ -254,9 +259,11 @@ internal static class RunPresenceTests
             rig.RunPresence = null;
 
             rig.Disconnect(session);
+            Expect(!rig.Spawned[0].Exited, "an unreadable run state still permits reconnect grace");
+            rig.ReconnectTime.Advance(HeadlessClientManager.BrowserReconnectGrace);
 
             Expect(rig.Spawned[0].HardKilled && rig.Evicted.Count == 1,
-                "a disconnect that cannot tell whether a run exists releases the seat, as an unreadable state always did");
+                "an unreadable run state follows lobby cleanup semantics when reconnect grace expires");
         });
     }
 
