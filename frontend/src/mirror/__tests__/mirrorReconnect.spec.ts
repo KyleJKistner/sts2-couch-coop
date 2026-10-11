@@ -470,6 +470,46 @@ describe("MirrorApp drop drills", () => {
     }
   });
 
+  it("rejoins when only the owning host socket goes stale without retiring its replacement twice", async () => {
+    await joinASeat();
+    const oldHost = MockWebSocket.instances[0];
+    const healthyView = latest();
+    window.dispatchEvent(new Event("pageshow"));
+    healthyView.emit({ type: "pong", t0: healthyView.sentOfType("ping")[0].t0 });
+    vi.advanceTimersByTime(WAKE_PING_TIMEOUT_MS - 1);
+    expect(healthyView.readyState).toBe(MockWebSocket.OPEN);
+    vi.advanceTimersByTime(1);
+    await settle();
+    expect(oldHost.readyState).toBe(3);
+    expect(healthyView.readyState).toBe(3);
+    expect(heading()).toBe("Reconnecting…");
+
+    vi.advanceTimersByTime(RECONNECT_BASE_DELAY_MS);
+    await settle();
+    expect(healthyView.readyState).toBe(3);
+    expect(MockWebSocket.instances).toHaveLength(3);
+    const newHost = latest();
+    newHost.emit(sessionMessage());
+    await settle();
+    expect(newHost.sentOfType("join")).toEqual([
+      expect.objectContaining({ name: "Alice", playerId: "p:1003" })
+    ]);
+    newHost.emit(sessionMessage({ headlessMirrorPort: 14000 }));
+    await settle();
+    const newView = latest();
+    expect(MockWebSocket.instances).toHaveLength(4);
+
+    // Synchronous close during teardown and late callbacks from the retired pair must not create another retry.
+    oldHost.dispatchEvent(new Event("close"));
+    healthyView.dispatchEvent(new Event("close"));
+    vi.advanceTimersByTime(RECONNECT_MAX_DELAY_MS);
+    await settle();
+    expect(MockWebSocket.instances).toHaveLength(4);
+    expect(latest()).toBe(newView);
+    expect(newHost.readyState).toBe(MockWebSocket.OPEN);
+    expect(heading()).toBe("Loading…");
+  });
+
   it("stays on the plain Reconnecting… state however long the retries keep failing (rule a)", async () => {
     await joinASeat();
 
