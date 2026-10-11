@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { nextTick } from "vue";
 
 import MirrorApp from "@/mirror/MirrorApp.vue";
-import { connectMirrorClient } from "@/mirror/mirrorClient";
+import { connectMirrorClient, WAKE_PING_TIMEOUT_MS } from "@/mirror/mirrorClient";
 import {
   findAutoRejoinSeat,
   nextReconnectDelayMs,
@@ -437,6 +437,37 @@ describe("MirrorApp drop drills", () => {
     await settle();
     expect(heading()).toBe("Loading…");
     expect(notice().exists()).toBe(false); // nothing scary was ever shown, and nothing lingers
+  });
+
+  it("automatically reclaims the seat after resume even when the old socket never fires close", async () => {
+    await joinASeat();
+    const deadSeat = latest();
+    const previous = MockWebSocket.instances.map(socket => ({ socket, close: socket.close.bind(socket) }));
+    // Both the host and view transport went stale while locked, and neither will deliver onclose.
+    for (const { socket } of previous) socket.close = () => { socket.readyState = 3; };
+    try {
+      window.dispatchEvent(new Event("pageshow"));
+      for (const { socket } of previous) expect(socket.sentOfType("ping")).toHaveLength(1);
+      vi.advanceTimersByTime(WAKE_PING_TIMEOUT_MS);
+      await settle();
+      for (const { socket } of previous) expect(socket.readyState).toBe(3);
+      expect(heading()).toBe("Reconnecting…");
+
+      vi.advanceTimersByTime(RECONNECT_BASE_DELAY_MS);
+      await settle();
+      expect(latest()).not.toBe(deadSeat);
+      latest().emit(sessionMessage());
+      await settle();
+      expect(latest().sentOfType("join")).toEqual([
+        expect.objectContaining({ name: "Alice", playerId: "p:1003" })
+      ]);
+      latest().emit(sessionMessage({ headlessMirrorPort: 14000 }));
+      await settle();
+      expect(heading()).toBe("Loading…");
+      expect(notice().exists()).toBe(false);
+    } finally {
+      for (const { socket, close } of previous) socket.close = close;
+    }
   });
 
   it("stays on the plain Reconnecting… state however long the retries keep failing (rule a)", async () => {

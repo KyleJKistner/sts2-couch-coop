@@ -1398,8 +1398,8 @@ function handleActiveClientDrop(): void {
   pendingName.value = null;
   joinSession.value = null;
   hostSession.value = null;
-  // And the seat itself is gone with it: `reconnectToHost` closes the host socket, which is what ends the seat
-  // process, so there is no port left to hold. The host assigns a fresh one on the next redirect.
+  // Re-run the host handshake to obtain a current view route. The host may retain this seat during its reconnect
+  // grace or the run, in which case the next join reuses the same live game.
   seatViewTarget = null;
   reconnectTimer = setTimeout(reconnectToHost, reconnectDelayMs);
   // Grow the ladder for the NEXT attempt; a successful open resets it (see onChange).
@@ -1407,8 +1407,8 @@ function handleActiveClientDrop(): void {
 }
 
 // Re-open a fresh HOST connection (no `url` → the page's own origin, i.e. the address the viewer loaded from) and
-// hand the app over to it. Every previous client is closed first: keeping the source-host socket open exists
-// only to protect the redirect handoff, and by now there is no headless left to protect.
+// hand the app over to it. Close the previous transports first so the new join can reclaim a retained seat
+// through one current host connection.
 function reconnectToHost(): void {
   reconnectTimer = null;
   presentationTarget.value = null;
