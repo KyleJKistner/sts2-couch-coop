@@ -294,8 +294,9 @@ export function createPixiMirrorRenderer(
   const rustSkipHiddenHitCandidates = backend === "rust" && attributionQuery.get("rustSkipHiddenHitCandidates") === "1";
   const hiddenMemo = backend === "rust" && fast.hiddenMemo ? createHiddenSubtreeMemo({ captures: fast.hiddenMemoCaptures }) : null;
   const rustStaticAdmissionPhaseMode = backend === "rust" && attributionQuery.get("rustStaticAdmissionPhase") === "1";
-  // The reviewed ack repair stays opt-in until a warm view/client capture qualifies it for the product default.
-  const rustPendingAckRetry = backend === "rust" && attributionQuery.get("rustPendingAckRetry") === "1";
+  // A newer view can wait behind an older async submission; its eventual publication still owes a view retry
+  // so the normal post-render callback returns wire credit. Keep an explicit diagnostic opt-out.
+  const rustPendingAckRetry = backend === "rust" && attributionQuery.get("rustPendingAckRetry") !== "0";
   const producerReasons = producerReasonMode ? createProducerBuildReasons(rustExecutionPhaseMode) : null;
   if (rustExecutionPhaseMode && (!producerReasons || typeof console.timeStamp !== "function"))
     throw new Error("Rust execution phases require rustProducerReasons=1 and console.timeStamp");

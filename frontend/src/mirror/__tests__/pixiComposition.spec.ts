@@ -619,8 +619,8 @@ describe("Pixi composition initialization", () => {
     }
   });
 
-  it("reproduces a pending newer revision that publishes without an ack pull", async () => {
-    window.history.replaceState(null, "", "/?rendererCompare=1&stage=rust&pixiScene=retained");
+  it("reproduces the lost ack only when the Rust pending-view retry is explicitly disabled", async () => {
+    window.history.replaceState(null, "", "/?rendererCompare=1&stage=rust&pixiScene=retained&rustPendingAckRetry=0");
     Object.assign(rendererComparisonConfig, readRendererComparisonConfig());
     measureStub();
     const events: WarmAckTraceEvent[] = [];
@@ -654,8 +654,8 @@ describe("Pixi composition initialization", () => {
     } finally { renderer.dispose(); }
   });
 
-  it("retries the pending Rust view after a newer async publication only when opted in", async () => {
-    window.history.replaceState(null, "", "/?rendererCompare=1&stage=rust&rustPendingAckRetry=1");
+  it("retries the pending Rust view by default after a newer async publication", async () => {
+    window.history.replaceState(null, "", "/?rendererCompare=1&stage=rust");
     Object.assign(rendererComparisonConfig, readRendererComparisonConfig());
     measureStub();
     const renderer = createPixiMirrorRenderer(stage(), document.createElementNS("http://www.w3.org/2000/svg", "defs"), null,
@@ -684,8 +684,8 @@ describe("Pixi composition initialization", () => {
     } finally { renderer.dispose(); }
   });
 
-  it("re-enters the real view and sends the real client scene ack after publication", async () => {
-    window.history.replaceState(null, "", "/?rendererCompare=1&stage=rust&rustPendingAckRetry=1");
+  it("re-enters the real view and sends one real client scene ack by default after publication", async () => {
+    window.history.replaceState(null, "", "/?rendererCompare=1&stage=rust");
     Object.assign(rendererComparisonConfig, readRendererComparisonConfig());
     measureStub();
     vi.stubGlobal("ResizeObserver", class { observe() {} disconnect() {} });
@@ -730,7 +730,33 @@ describe("Pixi composition initialization", () => {
       expect(trace.some(event => event.kind === "view-on-scene-rendered" && event.revision === deliveredRevision &&
         event.result === "before")).toBe(true);
       expect(trace.some(event => event.kind === "ack-sent" && event.revision === deliveredRevision)).toBe(true);
+      await clockAt(3052);
+      client.sendSceneAck();
+      expect(socket.acks()).toBe(1);
     } finally { wrapper.unmount(); client.close(); }
+  });
+
+  it.each(["refused", "rejected"])("does not retry a pending Rust view after a %s presentation", async (outcome) => {
+    window.history.replaceState(null, "", "/?rendererCompare=1&stage=rust");
+    Object.assign(rendererComparisonConfig, readRendererComparisonConfig());
+    const adapter = fakeAdapter(true);
+    adapter.admitScene.mockImplementation(() => (outcome === "refused"
+      ? Promise.resolve({ presented: false, reason: "texture pending" })
+      : Promise.reject(new Error("test presentation failure"))) as never);
+    const renderer = createPixiMirrorRenderer(stage(), document.createElementNS("http://www.w3.org/2000/svg", "defs"), null,
+      undefined, { backend: "rust", createExecutor: async () => adapter as never });
+    const retry = vi.fn(() => "presented" as const);
+    renderer.setReconcilePull?.({ pending: () => false, now: retry, retryNow: retry });
+    try {
+      await vi.waitFor(() => expect((window as unknown as { __mirrorRendererDiagnostics(): { readiness: string } })
+        .__mirrorRendererDiagnostics().readiness).toBe("ready"));
+      const state = createMirrorState(); state.revision = 40;
+      expect(renderer.reconcile(state)).toBe(false);
+      expect(diagnostic().asyncSubmissionRevision).toBe(40);
+      await vi.waitFor(() => expect(diagnostic().asyncSubmissionRevision).toBeNull());
+      expect(diagnostic().frameIdentity).toBeNull();
+      expect(retry).not.toHaveBeenCalled();
+    } finally { renderer.dispose(); }
   });
 
   it("does not retry a superseded or disposed Rust view obligation", async () => {
